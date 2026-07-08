@@ -1,7 +1,7 @@
 ; =============================================================
 ; CALCULADORA.asm
 ; Fase 4: leitura e impressao de numeros inteiros de 32 bits,
-; com suporte a sinal negativo.
+; com suporte a sinal negativo. 
 ;
 ; Monta:   nasm -f elf32 -g -F dwarf CALCULADORA.asm -o CALCULADORA.o
 ; Linka:   ld -m elf_i386 -o calculadora CALCULADORA.o
@@ -49,6 +49,9 @@ section .data
 
     msg_valor2          db "Segundo numero lido: "
     msg_valor2_len      equ $ - msg_valor2
+
+    msg_numero_overflow     db "Numero muito grande. Digite um valor entre -2147483648 e 2147483647:", 10
+    msg_numero_overflow_len equ $ - msg_numero_overflow
 
     msg_opcao_invalida       db "Opcao invalida. Tente novamente.", 10
     msg_opcao_invalida_len   equ $ - msg_opcao_invalida
@@ -323,31 +326,145 @@ fim_converte_numero32:
     ret
 
 ; -------------------------------------------------------------
+; verifica_overflow_numero32
+;   Percorre a mesma string de digitos que converte_numero32 vai
+;   processar, simulando o acumulo (valor = valor*10 + digito) e
+;   parando ANTES de multiplicar/somar caso isso fosse estourar a
+;   faixa de 32 bits -- sem depender de deteccao de overflow DEPOIS
+;   do fato (o que ja teria corrompido o valor por wraparound).
+;
+;   O limite depende do sinal, pois a faixa de int32 e assimetrica:
+;     positivo -> cabe ate 2147483647 (ultimo digito permitido: 7)
+;     negativo -> cabe ate 2147483648 em magnitude (ultimo digito
+;                 permitido: 8), pois esse e o INT_MIN
+;
+;   [ebp+8]  = ponteiro da string
+;   [ebp+12] = tamanho da string (sem contar o '\n')
+;   Retorna em EAX: 1 se houver overflow, 0 caso contrario.
+; -------------------------------------------------------------
+verifica_overflow_numero32:
+    push ebp
+    mov ebp, esp
+    sub esp, 4                  ; local: ultimo digito permitido (7 ou 8)
+    push ebx
+    push esi
+    push edi
+
+    mov esi, [ebp+8]            ; ponteiro da string
+    mov ecx, [ebp+12]           ; tamanho da string
+    xor edi, edi                 ; indice atual = 0
+    mov ebx, 1                    ; sinal = 1 (positivo)
+    xor eax, eax                  ; acumulador simulado = 0
+
+    cmp ecx, 0
+    je verifica_sem_overflow      ; string vazia -> sem overflow
+
+    mov dl, [esi]
+    cmp dl, '-'
+    jne verifica_checa_mais_sinal
+    mov ebx, -1
+    inc edi
+    jmp verifica_define_limite
+
+verifica_checa_mais_sinal:
+    cmp dl, '+'
+    jne verifica_define_limite
+    inc edi
+
+verifica_define_limite:
+    mov dword [ebp-4], 7          ; positivo -> ultimo digito permitido = 7
+    cmp ebx, -1
+    jne verifica_loop_overflow
+    mov dword [ebp-4], 8          ; negativo -> ultimo digito permitido = 8
+
+verifica_loop_overflow:
+    cmp edi, ecx
+    jge verifica_sem_overflow      ; percorreu a string inteira sem estourar
+
+    movzx edx, byte [esi+edi]
+    sub edx, '0'
+
+    cmp eax, 214748364              ; quociente do limite (igual p/ ambos os sinais)
+    ja verifica_com_overflow
+    jne verifica_avanca_overflow
+    cmp edx, [ebp-4]                ; empatou no quociente -> so cabe se digito <= limite
+    jg verifica_com_overflow
+
+verifica_avanca_overflow:
+    imul eax, eax, 10
+    add eax, edx
+    inc edi
+    jmp verifica_loop_overflow
+
+verifica_com_overflow:
+    mov eax, 1                       ; retorna 1 (overflow detectado)
+    jmp verifica_fim_overflow
+
+verifica_sem_overflow:
+    xor eax, eax                      ; retorna 0 (sem overflow)
+
+verifica_fim_overflow:
+    pop edi
+    pop esi
+    pop ebx
+    mov esp, ebp
+    pop ebp
+    ret
+
+; -------------------------------------------------------------
 ; ler_numero32
-;   Le uma linha do teclado e converte para inteiro de 32 bits.
-;   Usa um buffer LOCAL (proprio desta funcao) para receber os
-;   caracteres digitados -- nao precisa de variavel global, pois
-;   o buffer bruto so importa dentro desta funcao.
-;   Sem parametros. Retorna em EAX o valor inteiro lido.
+;   Imprime a mensagem de prompt recebida, le uma linha do teclado
+;   e converte para inteiro de 32 bits. Caso o valor digitado
+;   estoure a faixa de 32 bits, avisa o usuario e REPETE a mesma
+;   pergunta ate receber um valor valido -- mesmo padrao de retry
+;   ja usado na pergunta de precisao, em _start.
+;   [ebp+8]  = ponteiro da mensagem de prompt (reimpressa a cada
+;              tentativa, inclusive apos overflow)
+;   [ebp+12] = tamanho da mensagem de prompt
+;   Retorna em EAX o valor inteiro lido (ja validado, sem overflow).
 ; -------------------------------------------------------------
 ler_numero32:
     push ebp
     mov ebp, esp
-    sub esp, 16                  ; buffer local: ate 16 caracteres
+    ; layout local: [ebp-16..ebp-1] buffer de digitos (16 bytes)
+    ;               [ebp-20]        tamanho realmente lido
+    sub esp, 20
+
+tenta_ler_numero32:
+    push dword [ebp+12]           ; tamanho da mensagem de prompt
+    push dword [ebp+8]            ; ponteiro da mensagem de prompt
+    call print_string
+    add esp, 8
 
     lea eax, [ebp-16]
     push dword 16
     push eax
     call read_string
     add esp, 8
-    ; EAX = quantidade de caracteres lidos (sem o '\n')
+    mov [ebp-20], eax             ; tamanho realmente lido
 
-    push eax                     ; tamanho
+    push dword [ebp-20]
     lea eax, [ebp-16]
-    push eax                     ; ponteiro
+    push eax
+    call verifica_overflow_numero32
+    add esp, 8
+
+    cmp eax, 0
+    je numero32_sem_overflow
+
+    push dword msg_numero_overflow_len
+    push dword msg_numero_overflow
+    call print_string
+    add esp, 8
+    jmp tenta_ler_numero32          ; repete a MESMA pergunta original
+
+numero32_sem_overflow:
+    push dword [ebp-20]
+    lea eax, [ebp-16]
+    push eax
     call converte_numero32
     add esp, 8
-    ; EAX = valor inteiro convertido
+    ; EAX = valor inteiro convertido (ja garantidamente sem overflow)
 
     mov esp, ebp
     pop ebp
@@ -545,18 +662,14 @@ menu_loop:
     ; reais (SOMA, SUBTRACAO etc.) entram na Fase 5 em diante.
     push dword msg_pede_num1_len
     push dword msg_pede_num1
-    call print_string
-    add esp, 8
-
     call ler_numero32
+    add esp, 8
     mov [ebp-144], eax           ; num1
 
     push dword msg_pede_num2_len
     push dword msg_pede_num2
-    call print_string
-    add esp, 8
-
     call ler_numero32
+    add esp, 8
     mov [ebp-148], eax           ; num2
 
     push dword msg_valor1_len
