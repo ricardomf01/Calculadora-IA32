@@ -1,9 +1,23 @@
 ; =============================================================
 ; CALCULADORA.asm
-; Fase 3: pergunta de precisao (16/32 bits) + menu principal em
-; loop. Operacoes (SOMA, SUBTRACAO etc.) ainda nao implementadas.
-; Escolher uma opcao valida (1-6) apenas confirma o recebimento
-; e volta ao menu; a opcao 7 encerra o programa.
+; Fase 4: leitura e impressao de numeros inteiros de 32 bits,
+; com suporte a sinal negativo. Testado de forma ISOLADA: ao
+; escolher uma opcao valida (1-6) no menu, o programa agora le
+; dois numeros e os REIMPRIME (sem somar/subtrair/etc. ainda) --
+; isso valida que ler_numero32/converte_numero32/imprime_inteiro
+; funcionam corretamente antes de implementar as operacoes reais
+; nas proximas fases (SOMA.asm, SUBTRACAO.asm, etc.).
+;
+; Novidades desta fase:
+;   - ler_numero32     : le uma linha e converte para inteiro
+;                        de 32 bits (usa converte_numero32)
+;   - converte_numero32 : converte uma string (com sinal opcional)
+;                        para o valor inteiro correspondente
+;   - imprime_inteiro   : converte um inteiro para string e
+;                        imprime (via print_string), usando a
+;                        instrucao DIV real do IA-32
+;
+; Todos os arquivos do projeto usam extensao .asm (minuscula).
 ;
 ; Monta:   nasm -f elf32 -g -F dwarf CALCULADORA.asm -o CALCULADORA.o
 ; Linka:   ld -m elf_i386 -o calculadora CALCULADORA.o
@@ -40,8 +54,17 @@ section .data
                            "- 7: SAIR", 10
     msg_menu_len        equ $ - msg_menu
 
-    msg_nao_implementado     db "Opcao recebida (operacao ainda sera implementada nas proximas fases).", 10
-    msg_nao_implementado_len equ $ - msg_nao_implementado
+    msg_pede_num1       db "Digite o primeiro numero:", 10
+    msg_pede_num1_len   equ $ - msg_pede_num1
+
+    msg_pede_num2       db "Digite o segundo numero:", 10
+    msg_pede_num2_len   equ $ - msg_pede_num2
+
+    msg_valor1          db "Primeiro numero lido: "
+    msg_valor1_len      equ $ - msg_valor1
+
+    msg_valor2          db "Segundo numero lido: "
+    msg_valor2_len      equ $ - msg_valor2
 
     msg_opcao_invalida       db "Opcao invalida. Tente novamente.", 10
     msg_opcao_invalida_len   equ $ - msg_opcao_invalida
@@ -219,6 +242,165 @@ converte_digito:
     ret
 
 ; -------------------------------------------------------------
+; converte_numero32
+;   Converte uma string de digitos (com sinal opcional '+'/'-')
+;   para o inteiro de 32 bits correspondente.
+;   [ebp+8]  = ponteiro da string
+;   [ebp+12] = tamanho da string (sem contar o '\n')
+;   Retorna em EAX o valor inteiro convertido (com sinal).
+; -------------------------------------------------------------
+converte_numero32:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+
+    mov esi, [ebp+8]         ; ponteiro da string
+    mov ecx, [ebp+12]        ; tamanho da string
+    xor edi, edi              ; indice atual = 0
+    mov ebx, 1                 ; sinal = 1 (positivo)
+    xor eax, eax               ; valor acumulado = 0
+
+    cmp ecx, 0
+    je fim_converte_numero32   ; string vazia -> retorna 0
+
+    mov dl, [esi]               ; primeiro caractere
+    cmp dl, '-'
+    jne checa_mais_numero32
+    mov ebx, -1                 ; sinal negativo
+    inc edi
+    jmp loop_digitos_numero32
+
+checa_mais_numero32:
+    cmp dl, '+'
+    jne loop_digitos_numero32
+    inc edi                     ; apenas pula o '+', sinal continua 1
+
+loop_digitos_numero32:
+    cmp edi, ecx
+    jge aplica_sinal_numero32
+
+    movzx edx, byte [esi+edi]
+    sub edx, '0'
+    imul eax, eax, 10           ; valor = valor * 10
+    add eax, edx                ; valor += digito
+    inc edi
+    jmp loop_digitos_numero32
+
+aplica_sinal_numero32:
+    imul eax, ebx                ; valor = valor * sinal
+
+fim_converte_numero32:
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+
+; -------------------------------------------------------------
+; ler_numero32
+;   Le uma linha do teclado e converte para inteiro de 32 bits.
+;   Usa um buffer LOCAL (proprio desta funcao) para receber os
+;   caracteres digitados -- nao precisa de variavel global, pois
+;   o buffer bruto so importa dentro desta funcao.
+;   Sem parametros. Retorna em EAX o valor inteiro lido.
+; -------------------------------------------------------------
+ler_numero32:
+    push ebp
+    mov ebp, esp
+    sub esp, 16                  ; buffer local: ate 16 caracteres
+
+    lea eax, [ebp-16]
+    push dword 16
+    push eax
+    call read_string
+    add esp, 8
+    ; EAX = quantidade de caracteres lidos (sem o '\n')
+
+    push eax                     ; tamanho
+    lea eax, [ebp-16]
+    push eax                     ; ponteiro
+    call converte_numero32
+    add esp, 8
+    ; EAX = valor inteiro convertido
+
+    mov esp, ebp
+    pop ebp
+    ret
+
+; -------------------------------------------------------------
+; imprime_inteiro
+;   Converte um inteiro de 32 bits (com sinal) para string
+;   decimal e imprime, seguido de uma quebra de linha.
+;   Usa a instrucao DIV real do IA-32 para extrair os digitos.
+;   [ebp+8] = valor inteiro a imprimir
+;   Sem retorno.
+; -------------------------------------------------------------
+imprime_inteiro:
+    push ebp
+    mov ebp, esp
+    sub esp, 17                  ; buffer local: sinal + 10 digitos + '\n'
+                                  ; ocupa [ebp-17 .. ebp-1] -- alocado
+                                  ; ANTES dos push abaixo, para nao
+                                  ; sobrepor os registradores salvos
+    push ebx
+    push esi
+    push edi
+
+    mov byte [ebp-1], 10         ; ultimo byte do buffer = '\n' (fixo)
+    lea edi, [ebp-2]             ; posicao de escrita, logo antes do '\n'
+
+    mov eax, [ebp+8]             ; valor a converter
+    mov ebx, 1                    ; sinal positivo = 1
+    cmp eax, 0
+    jge numero_nao_negativo
+    mov ebx, 0                    ; sinal negativo = 0
+    neg eax                       ; trabalha com o valor absoluto
+numero_nao_negativo:
+
+    cmp eax, 0
+    jne loop_extrai_digitos
+    mov byte [edi], '0'           ; caso especial: valor == 0
+    dec edi
+    jmp fim_extrai_digitos
+
+loop_extrai_digitos:
+    cmp eax, 0
+    je fim_extrai_digitos
+    xor edx, edx
+    mov esi, 10
+    div esi                       ; EAX = EAX/10 , EDX = EAX%10 (DIV real)
+    add edx, '0'
+    mov byte [edi], dl
+    dec edi
+    jmp loop_extrai_digitos
+
+fim_extrai_digitos:
+    cmp ebx, 0
+    jne pula_sinal_negativo
+    mov byte [edi], '-'
+    dec edi
+pula_sinal_negativo:
+
+    ; a string valida comeca em (edi+1) e termina em (ebp-1), com \n incluso
+    lea eax, [ebp-1]
+    sub eax, edi                  ; tamanho = (ebp-1) - edi
+    lea ecx, [edi+1]              ; ponteiro para o inicio da string
+
+    push eax                      ; tamanho
+    push ecx                      ; ponteiro
+    call print_string
+    add esp, 8
+
+    pop edi
+    pop esi
+    pop ebx
+    mov esp, ebp
+    pop ebp
+    ret
+
+; -------------------------------------------------------------
 _start:
     push ebp
     mov ebp, esp
@@ -228,7 +410,9 @@ _start:
     ;   [ebp-140 .. ebp-133] -> buffer local p/ ler um digito
     ;                           (reaproveitado para precisao E
     ;                           para cada opcao do menu no loop)
-    sub esp, 140
+    ;   [ebp-144]            -> primeiro numero lido (Fase 4)
+    ;   [ebp-148]            -> segundo numero lido (Fase 4)
+    sub esp, 148
 
     ; 1) pergunta o nome
     push dword msg_pedir_nome_len
@@ -332,11 +516,43 @@ menu_loop:
     cmp dword [opcao], 6
     jg opcao_invalida
 
-    ; opcao valida (1-6) -- operacoes reais entram nas proximas fases
-    push dword msg_nao_implementado_len
-    push dword msg_nao_implementado
+    ; opcao valida (1-6) -- por enquanto, testamos ISOLADAMENTE a
+    ; leitura/impressao de numeros de 32 bits (Fase 4). As operacoes
+    ; reais (SOMA, SUBTRACAO etc.) entram na Fase 5 em diante.
+    push dword msg_pede_num1_len
+    push dword msg_pede_num1
     call print_string
     add esp, 8
+
+    call ler_numero32
+    mov [ebp-144], eax           ; num1
+
+    push dword msg_pede_num2_len
+    push dword msg_pede_num2
+    call print_string
+    add esp, 8
+
+    call ler_numero32
+    mov [ebp-148], eax           ; num2
+
+    push dword msg_valor1_len
+    push dword msg_valor1
+    call print_string
+    add esp, 8
+
+    push dword [ebp-144]
+    call imprime_inteiro
+    add esp, 4
+
+    push dword msg_valor2_len
+    push dword msg_valor2
+    call print_string
+    add esp, 8
+
+    push dword [ebp-148]
+    call imprime_inteiro
+    add esp, 4
+
     jmp menu_loop
 
 opcao_invalida:
