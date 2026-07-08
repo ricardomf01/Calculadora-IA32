@@ -1,6 +1,4 @@
 # Makefile - Trabalho 2 (Software Basico)
-# Fase 1: apenas CALCULADORA.ASM existe ainda.
-# Nas proximas fases, adicione SOMA.o SUBTRACAO.o etc. a OBJS.
 
 ASM      = nasm
 ASMFLAGS = -f elf32 -g -F dwarf

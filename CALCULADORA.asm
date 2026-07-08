@@ -1,23 +1,7 @@
 ; =============================================================
 ; CALCULADORA.asm
 ; Fase 4: leitura e impressao de numeros inteiros de 32 bits,
-; com suporte a sinal negativo. Testado de forma ISOLADA: ao
-; escolher uma opcao valida (1-6) no menu, o programa agora le
-; dois numeros e os REIMPRIME (sem somar/subtrair/etc. ainda) --
-; isso valida que ler_numero32/converte_numero32/imprime_inteiro
-; funcionam corretamente antes de implementar as operacoes reais
-; nas proximas fases (SOMA.asm, SUBTRACAO.asm, etc.).
-;
-; Novidades desta fase:
-;   - ler_numero32     : le uma linha e converte para inteiro
-;                        de 32 bits (usa converte_numero32)
-;   - converte_numero32 : converte uma string (com sinal opcional)
-;                        para o valor inteiro correspondente
-;   - imprime_inteiro   : converte um inteiro para string e
-;                        imprime (via print_string), usando a
-;                        instrucao DIV real do IA-32
-;
-; Todos os arquivos do projeto usam extensao .asm (minuscula).
+; com suporte a sinal negativo.
 ;
 ; Monta:   nasm -f elf32 -g -F dwarf CALCULADORA.asm -o CALCULADORA.o
 ; Linka:   ld -m elf_i386 -o calculadora CALCULADORA.o
@@ -115,32 +99,72 @@ print_string:
 ;   Retorna em EAX a quantidade de caracteres lidos, SEM contar
 ;   o '\n' final (se o usuario apertar ENTER, o que e o caso
 ;   normal ao digitar o nome).
+;
+;   IMPORTANTE (correcao de bug): se a linha digitada pelo
+;   usuario for MAIOR que o buffer pedido, o '\n' final NAO
+;   estara dentro do que foi lido aqui -- e os bytes restantes
+;   ficariam esperando no stdin, sendo lidos silenciosamente na
+;   PROXIMA chamada de read_string (sem o usuario digitar nada
+;   naquele momento). Para evitar isso, quando detectamos que o
+;   '\n' nao veio dentro do buffer, DRENAMOS (descartamos) o
+;   resto da mesma linha aqui dentro, antes de retornar --
+;   assim a proxima chamada sempre comeca numa linha nova de
+;   verdade, digitada pelo usuario.
 ; -------------------------------------------------------------
 read_string:
     push ebp
     mov ebp, esp
+    sub esp, 20               ; [ebp-16..ebp-1] = buffer de descarte
+                                ; [ebp-20]        = contagem original salva
     push ebx
     push ecx
     push edx
 
-    mov eax, 3              ; syscall sys_read
-    xor ebx, ebx             ; file descriptor 0 = stdin
-    mov ecx, [ebp+8]        ; buffer de destino
-    mov edx, [ebp+12]       ; tamanho maximo
-    int 0x80                 ; EAX = bytes efetivamente lidos
+    mov eax, 3               ; syscall sys_read
+    xor ebx, ebx              ; file descriptor 0 = stdin
+    mov ecx, [ebp+8]         ; buffer de destino (do chamador)
+    mov edx, [ebp+12]        ; tamanho maximo (do chamador)
+    int 0x80                  ; EAX = bytes efetivamente lidos
+    mov [ebp-20], eax         ; salva a contagem original
 
-    ; remove o '\n' final do total contado, se existir
+    ; verifica se o '\n' esta dentro do que foi lido
     mov ecx, [ebp+8]
     add ecx, eax
     dec ecx
     cmp byte [ecx], 10
-    jne .fim
-    dec eax
+    jne drena_resto_linha_read_string
+    dec dword [ebp-20]         ; remove o '\n' da contagem salva
+    jmp fim_read_string
 
-.fim:
+drena_resto_linha_read_string:
+    ; a linha digitada era maior que o buffer do chamador -- ainda
+    ; sobram bytes DESSA MESMA linha esperando no stdin. Descarta
+    ; ate encontrar o '\n' que fecha a linha.
+loop_drena_linha_read_string:
+    mov eax, 3
+    xor ebx, ebx
+    lea ecx, [ebp-16]          ; buffer de descarte local (nunca devolvido)
+    mov edx, 16
+    int 0x80                    ; EAX = bytes lidos neste pedaco descartado
+
+    cmp eax, 0
+    je fim_read_string          ; seguranca: nada mais para ler (ex.: EOF)
+
+    lea ecx, [ebp-16]
+    add ecx, eax
+    dec ecx
+    cmp byte [ecx], 10
+    je fim_read_string          ; achou o fim da linha -> pode parar de descartar
+
+    jmp loop_drena_linha_read_string  ; ainda sobrou mais da mesma linha
+
+fim_read_string:
+    mov eax, [ebp-20]           ; recupera a contagem original (ja ajustada)
+
     pop edx
     pop ecx
     pop ebx
+    mov esp, ebp
     pop ebp
     ret
 
