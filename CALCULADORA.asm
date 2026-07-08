@@ -1,7 +1,9 @@
 ; =============================================================
 ; CALCULADORA.asm
-; Fase 2: leitura do nome do usuario + mensagem de saudacao.
-;
+; Fase 3: pergunta de precisao (16/32 bits) + menu principal em
+; loop. Operacoes (SOMA, SUBTRACAO etc.) ainda nao implementadas.
+; Escolher uma opcao valida (1-6) apenas confirma o recebimento
+; e volta ao menu; a opcao 7 encerra o programa.
 ;
 ; Monta:   nasm -f elf32 -g -F dwarf CALCULADORA.asm -o CALCULADORA.o
 ; Linka:   ld -m elf_i386 -o calculadora CALCULADORA.o
@@ -11,24 +13,56 @@
 section .data
     msg_pedir_nome      db "Bem-vindo. Digite seu nome:", 10
     msg_pedir_nome_len  equ $ - msg_pedir_nome
- 
+
     ; pedacos fixos da saudacao final -- sao "ponteiros de
     ; mensagem", categoria explicitamente permitida como global
     msg_ola             db "Ola, "
     msg_ola_len         equ $ - msg_ola
- 
+
     msg_bemvindo        db ", bem-vindo ao programa de CALCULADORA IA-32.", 10
     msg_bemvindo_len    equ $ - msg_bemvindo
- 
+
+    msg_precisao        db "Vai trabalhar com 16 ou 32 bits (digite 0 para 16, e 1 para 32):", 10
+    msg_precisao_len    equ $ - msg_precisao
+
+    msg_precisao_invalida     db "Valor invalido. Digite 0 (16 bits) ou 1 (32 bits).", 10
+    msg_precisao_invalida_len equ $ - msg_precisao_invalida
+
+    ; menu completo em um unico bloco -- continua sendo impresso
+    ; por UMA SO chamada a print_string (a funcao unica de saida)
+    msg_menu            db "ESCOLHA UMA OPCAO:", 10, \
+                           "- 1: SOMA", 10, \
+                           "- 2: SUBTRACAO", 10, \
+                           "- 3: MULTIPLICACAO", 10, \
+                           "- 4: DIVISAO", 10, \
+                           "- 5: EXPONENCIACAO", 10, \
+                           "- 6: MOD", 10, \
+                           "- 7: SAIR", 10
+    msg_menu_len        equ $ - msg_menu
+
+    msg_nao_implementado     db "Opcao recebida (operacao ainda sera implementada nas proximas fases).", 10
+    msg_nao_implementado_len equ $ - msg_nao_implementado
+
+    msg_opcao_invalida       db "Opcao invalida. Tente novamente.", 10
+    msg_opcao_invalida_len   equ $ - msg_opcao_invalida
+
 section .bss
     ; "variavel de nome" -- unica das variaveis de dado (nao
     ; ponteiro de mensagem fixa) explicitamente permitida como
     ; global pelo enunciado.
+    ; Declaradas "global" para poderem ser inspecionadas pelo
+    ; gdb (print/x) e para eventual uso por outros arquivos .asm.
+    global nome, precisao, opcao
     nome        resb 64
- 
+
+    ; "variavel de precisao" e "variavel de opcao do menu" --
+    ; tambem explicitamente permitidas como globais.
+    precisao    resd 1
+    opcao       resd 1
+
 section .text
     global _start
- 
+
 ; -------------------------------------------------------------
 ; print_string  (sem alteracoes desde a Fase 1)
 ;   [ebp+8]  = ponteiro da string
@@ -39,17 +73,17 @@ print_string:
     push ebp
     mov ebp, esp
     pusha
- 
+
     mov eax, 4
     mov ebx, 1
     mov ecx, [ebp+8]
     mov edx, [ebp+12]
     int 0x80
- 
+
     popa
     pop ebp
     ret
- 
+
 ; -------------------------------------------------------------
 ; read_string
 ;   Le uma linha do teclado (stdin) para dentro de um buffer.
@@ -65,13 +99,13 @@ read_string:
     push ebx
     push ecx
     push edx
- 
+
     mov eax, 3              ; syscall sys_read
     xor ebx, ebx             ; file descriptor 0 = stdin
     mov ecx, [ebp+8]        ; buffer de destino
     mov edx, [ebp+12]       ; tamanho maximo
     int 0x80                 ; EAX = bytes efetivamente lidos
- 
+
     ; remove o '\n' final do total contado, se existir
     mov ecx, [ebp+8]
     add ecx, eax
@@ -79,14 +113,14 @@ read_string:
     cmp byte [ecx], 10
     jne .fim
     dec eax
- 
+
 .fim:
     pop edx
     pop ecx
     pop ebx
     pop ebp
     ret
- 
+
 ; -------------------------------------------------------------
 ; copiar_bytes
 ;   Copia [tamanho] bytes de [origem] para [destino].
@@ -103,21 +137,21 @@ copiar_bytes:
     push esi
     push edi
     push ecx
- 
+
     mov edi, [ebp+8]
     mov esi, [ebp+12]
     mov ecx, [ebp+16]
     cld
     rep movsb                ; copia ECX bytes de [ESI] para [EDI]
- 
+
     mov eax, edi              ; EDI ja esta em destino+tamanho
- 
+
     pop ecx
     pop edi
     pop esi
     pop ebp
     ret
- 
+
 ; -------------------------------------------------------------
 ; monta_saudacao
 ;   Monta em [destino] a frase "Ola, <nome>, bem-vindo ao
@@ -133,60 +167,82 @@ monta_saudacao:
     push ebp
     mov ebp, esp
     sub esp, 4                ; local: ponteiro de escrita atual
- 
+
     mov eax, [ebp+8]
     mov [ebp-4], eax           ; ptr_atual = destino
- 
+
     push dword msg_ola_len
     push dword msg_ola
     push dword [ebp-4]
     call copiar_bytes
     add esp, 12
     mov [ebp-4], eax
- 
+
     push dword [ebp+16]        ; tamanho do nome
     push dword [ebp+12]        ; ponteiro do nome
     push dword [ebp-4]
     call copiar_bytes
     add esp, 12
     mov [ebp-4], eax
- 
+
     push dword msg_bemvindo_len
     push dword msg_bemvindo
     push dword [ebp-4]
     call copiar_bytes
     add esp, 12
     mov [ebp-4], eax
- 
+
     mov eax, [ebp-4]
     sub eax, [ebp+8]           ; tamanho total = ptr_final - ptr_inicial
- 
+
     mov esp, ebp
     pop ebp
     ret
- 
+
+; -------------------------------------------------------------
+; converte_digito
+;   Converte um caractere ASCII de digito ('0' a '9') no valor
+;   inteiro correspondente. Usada tanto para a precisao (0 ou 1)
+;   quanto para a opcao do menu (1 a 7).
+;   [ebp+8] = ponteiro para o buffer (le apenas o 1o caractere)
+;   Retorna em EAX o valor inteiro do digito.
+; -------------------------------------------------------------
+converte_digito:
+    push ebp
+    mov ebp, esp
+
+    mov ecx, [ebp+8]
+    movzx eax, byte [ecx]
+    sub eax, '0'
+
+    pop ebp
+    ret
+
 ; -------------------------------------------------------------
 _start:
     push ebp
     mov ebp, esp
     ; layout das variaveis locais deste "main":
-    ;   [ebp-128 .. ebp-1] -> buffer local p/ montar a saudacao
-    ;   [ebp-132]          -> tamanho do nome lido
-    sub esp, 132
- 
+    ;   [ebp-128 .. ebp-1]   -> buffer local p/ montar a saudacao
+    ;   [ebp-132]            -> tamanho do nome lido
+    ;   [ebp-140 .. ebp-133] -> buffer local p/ ler um digito
+    ;                           (reaproveitado para precisao E
+    ;                           para cada opcao do menu no loop)
+    sub esp, 140
+
     ; 1) pergunta o nome
     push dword msg_pedir_nome_len
     push dword msg_pedir_nome
     call print_string
     add esp, 8
- 
+
     ; 2) le o nome (guardado na global "nome", permitida pelo enunciado)
     push dword 64
     push dword nome
     call read_string
     add esp, 8
     mov [ebp-132], eax          ; nome_len = EAX
- 
+
     ; 3) monta a saudacao em um buffer LOCAL (nao cria global nova)
     lea eax, [ebp-128]
     push dword [ebp-132]        ; nome_len
@@ -194,16 +250,104 @@ _start:
     push eax                     ; ponteiro do buffer local (destino)
     call monta_saudacao
     add esp, 12                  ; EAX = tamanho total da saudacao
- 
+
     ; 4) imprime a saudacao
     push eax                     ; tamanho
     lea eax, [ebp-128]
     push eax                     ; ponteiro do buffer
     call print_string
     add esp, 8
- 
-    ; 5) por enquanto, encerra aqui -- a Fase 3 substitui isto
-    ;    pela pergunta de precisao + o loop do menu
+
+    ; 5) pergunta a precisao (0 = 16 bits, 1 = 32 bits)
+    ;    repete ate receber uma entrada valida de UM SO caractere
+pergunta_precisao:
+    push dword msg_precisao_len
+    push dword msg_precisao
+    call print_string
+    add esp, 8
+
+    lea eax, [ebp-140]           ; buffer local do digito
+    push dword 8
+    push eax
+    call read_string
+    add esp, 8
+    ; EAX = quantidade de caracteres realmente lidos (sem o '\n')
+
+    cmp eax, 1                   ; precisa ser EXATAMENTE 1 caractere
+    jne precisao_invalida
+
+    lea eax, [ebp-140]
+    push eax
+    call converte_digito
+    add esp, 4
+
+    cmp eax, 0
+    je precisao_valida
+    cmp eax, 1
+    je precisao_valida
+    jmp precisao_invalida
+
+precisao_valida:
+    mov [precisao], eax          ; guarda na global "precisao"
+    jmp fim_precisao
+
+precisao_invalida:
+    push dword msg_precisao_invalida_len
+    push dword msg_precisao_invalida
+    call print_string
+    add esp, 8
+    jmp pergunta_precisao
+
+fim_precisao:
+
+    ; 6) loop principal do menu
+menu_loop:
+    push dword msg_menu_len
+    push dword msg_menu
+    call print_string
+    add esp, 8
+
+    lea eax, [ebp-140]           ; reaproveita o buffer local do digito
+    push dword 8
+    push eax
+    call read_string
+    add esp, 8
+    ; EAX = quantidade de caracteres realmente lidos (sem o '\n')
+
+    cmp eax, 1                   ; precisa ser EXATAMENTE 1 caractere
+    jne opcao_invalida          ; ex.: "716" tem 3 chars -> invalida direto,
+                                  ; nunca chega a interpretar o '7' isolado
+
+    lea eax, [ebp-140]
+    push eax
+    call converte_digito
+    add esp, 4
+    mov [opcao], eax             ; guarda na global "opcao"
+
+    cmp dword [opcao], 7
+    je sair_menu
+
+    cmp dword [opcao], 1
+    jl opcao_invalida
+    cmp dword [opcao], 6
+    jg opcao_invalida
+
+    ; opcao valida (1-6) -- operacoes reais entram nas proximas fases
+    push dword msg_nao_implementado_len
+    push dword msg_nao_implementado
+    call print_string
+    add esp, 8
+    jmp menu_loop
+
+opcao_invalida:
+    push dword msg_opcao_invalida_len
+    push dword msg_opcao_invalida
+    call print_string
+    add esp, 8
+    jmp menu_loop
+
+sair_menu:
+    ; 7) encerra o programa
     mov esp, ebp
     pop ebp
     mov eax, 1
