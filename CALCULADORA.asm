@@ -1,10 +1,11 @@
 ; =============================================================
 ; CALCULADORA.asm
-; Fase 4: leitura e impressao de numeros inteiros de 32 bits,
-; com suporte a sinal negativo. 
+; Fase 5: Operação SOMA (32 bits) implementada.
+; Demais operações ainda vazias.
 ;
 ; Monta:   nasm -f elf32 -g -F dwarf CALCULADORA.asm -o CALCULADORA.o
-; Linka:   ld -m elf_i386 -o calculadora CALCULADORA.o
+;          nasm -f elf32 -g -F dwarf soma.asm -o soma.o
+; Linka:   ld -m elf_i386 -o calculadora CALCULADORA.o soma.o
 ; Roda:    ./calculadora
 ; =============================================================
 
@@ -53,6 +54,12 @@ section .data
     msg_numero_overflow     db "Numero muito grande. Digite um valor entre -2147483648 e 2147483647:", 10
     msg_numero_overflow_len equ $ - msg_numero_overflow
 
+    msg_resultado       db "Resultado: "
+    msg_resultado_len   equ $ - msg_resultado
+
+    msg_nao_implementado     db "Operacao ainda nao implementada (chega nas proximas fases).", 10
+    msg_nao_implementado_len equ $ - msg_nao_implementado
+
     msg_opcao_invalida       db "Opcao invalida. Tente novamente.", 10
     msg_opcao_invalida_len   equ $ - msg_opcao_invalida
 
@@ -72,6 +79,7 @@ section .bss
 
 section .text
     global _start
+    extern soma            ; funcao definida em soma.asm (Fase 5)
 
 ; -------------------------------------------------------------
 ; print_string  (sem alteracoes desde a Fase 1)
@@ -553,7 +561,8 @@ _start:
     ;                           para cada opcao do menu no loop)
     ;   [ebp-144]            -> primeiro numero lido (Fase 4)
     ;   [ebp-148]            -> segundo numero lido (Fase 4)
-    sub esp, 148
+    ;   [ebp-152]            -> resultado da operacao (Fase 5)
+    sub esp, 152
 
     ; 1) pergunta o nome
     push dword msg_pedir_nome_len
@@ -687,6 +696,33 @@ menu_loop:
     add esp, 8
 
     push dword [ebp-148]
+    call imprime_inteiro
+    add esp, 4
+
+    ; dispatch: chama a operacao real quando ja implementada
+    cmp dword [opcao], 1
+    je faz_soma
+
+    ; opcoes 2-6 ainda nao implementadas -- proximas fases
+    push dword msg_nao_implementado_len
+    push dword msg_nao_implementado
+    call print_string
+    add esp, 8
+    jmp menu_loop
+
+faz_soma:
+    push dword [ebp-148]         ; segundo numero (b)
+    push dword [ebp-144]         ; primeiro numero (a)
+    call soma
+    add esp, 8
+    mov [ebp-152], eax           ; resultado = a + b
+
+    push dword msg_resultado_len
+    push dword msg_resultado
+    call print_string
+    add esp, 8
+
+    push dword [ebp-152]
     call imprime_inteiro
     add esp, 4
 

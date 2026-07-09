@@ -5,7 +5,7 @@ ASMFLAGS = -f elf32 -g -F dwarf
 LD       = ld
 LDFLAGS  = -m elf_i386
 
-OBJS = CALCULADORA.o
+OBJS = CALCULADORA.o SOMA.o
 
 calculadora: $(OBJS)
 	$(LD) $(LDFLAGS) -o calculadora $(OBJS)
