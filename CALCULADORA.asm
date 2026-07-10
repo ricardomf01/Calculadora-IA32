@@ -1,11 +1,22 @@
 ; =============================================================
 ; CALCULADORA.asm
-; Fase 5: Operação SOMA (32 bits) implementada.
-; Demais operações ainda vazias.
+; Fase 6: SUBTRACAO, MULTIPLICACAO e DIVISAO ligadas ao menu
+; (opcoes 2, 3 e 4), alem da SOMA ja implementada na Fase 5.
 ;
-; Monta:   nasm -f elf32 -g -F dwarf CALCULADORA.asm -o CALCULADORA.o
-;          nasm -f elf32 -g -F dwarf soma.asm -o soma.o
-; Linka:   ld -m elf_i386 -o calculadora CALCULADORA.o soma.o
+; MULTIPLICACAO detecta overflow (via flag OF do IMUL, em
+; multiplicacao.asm) -- em caso de overflow, mostra "OCORREU
+; OVERFLOW" e ENCERRA o programa.
+;
+; DIVISAO verifica se o divisor e zero ANTES de chamar a funcao
+; divisao (que usa IDIV).
+;
+;
+; Monta:   nasm -f elf32 -g -F dwarf CALCULADORA.asm  -o CALCULADORA.o
+;          nasm -f elf32 -g -F dwarf soma.asm          -o soma.o
+;          nasm -f elf32 -g -F dwarf subtracao.asm     -o subtracao.o
+;          nasm -f elf32 -g -F dwarf multiplicacao.asm -o multiplicacao.o
+;          nasm -f elf32 -g -F dwarf divisao.asm       -o divisao.o
+; Linka:   ld -m elf_i386 -o calculadora CALCULADORA.o soma.o subtracao.o multiplicacao.o divisao.o
 ; Roda:    ./calculadora
 ; =============================================================
 
@@ -57,6 +68,12 @@ section .data
     msg_resultado       db "Resultado: "
     msg_resultado_len   equ $ - msg_resultado
 
+    msg_overflow_mult       db "OCORREU OVERFLOW", 10
+    msg_overflow_mult_len   equ $ - msg_overflow_mult
+
+    msg_divisao_zero        db "Nao e possivel dividir por zero. Voltando ao menu.", 10
+    msg_divisao_zero_len    equ $ - msg_divisao_zero
+
     msg_nao_implementado     db "Operacao ainda nao implementada (chega nas proximas fases).", 10
     msg_nao_implementado_len equ $ - msg_nao_implementado
 
@@ -79,7 +96,11 @@ section .bss
 
 section .text
     global _start
-    extern soma            ; funcao definida em soma.asm (Fase 5)
+    extern soma                              ; funcao definida em soma.asm (Fase 5)
+    extern subtracao                         ; funcao definida em subtracao.asm (Fase 6)
+    extern multiplicacao                     ; funcao definida em multiplicacao.asm (Fase 6)
+    extern verifica_overflow_multiplicacao   ; idem
+    extern divisao                           ; funcao definida em divisao.asm (Fase 6)
 
 ; -------------------------------------------------------------
 ; print_string  (sem alteracoes desde a Fase 1)
@@ -489,10 +510,10 @@ numero32_sem_overflow:
 imprime_inteiro:
     push ebp
     mov ebp, esp
-    sub esp, 17                  ; buffer local: sinal + 10 digitos + '\n'
-                                  ; ocupa [ebp-17 .. ebp-1] -- alocado
-                                  ; ANTES dos push abaixo, para nao
-                                  ; sobrepor os registradores salvos
+    sub esp, 17                 ; buffer local: sinal + 10 digitos + '\n'
+                                ; ocupa [ebp-17 .. ebp-1] -- alocado
+                                ; ANTES dos push abaixo, para nao
+                                ; sobrepor os registradores salvos
     push ebx
     push esi
     push edi
@@ -530,6 +551,7 @@ fim_extrai_digitos:
     jne pula_sinal_negativo
     mov byte [edi], '-'
     dec edi
+    
 pula_sinal_negativo:
 
     ; a string valida comeca em (edi+1) e termina em (ebp-1), com \n incluso
@@ -702,8 +724,14 @@ menu_loop:
     ; dispatch: chama a operacao real quando ja implementada
     cmp dword [opcao], 1
     je faz_soma
+    cmp dword [opcao], 2
+    je faz_subtracao
+    cmp dword [opcao], 3
+    je faz_multiplicacao
+    cmp dword [opcao], 4
+    je faz_divisao
 
-    ; opcoes 2-6 ainda nao implementadas -- proximas fases
+    ; opcoes 5-6 (EXPONENCIACAO, MOD) ainda nao implementadas -- Fase 8
     push dword msg_nao_implementado_len
     push dword msg_nao_implementado
     call print_string
@@ -716,7 +744,71 @@ faz_soma:
     call soma
     add esp, 8
     mov [ebp-152], eax           ; resultado = a + b
+    jmp mostra_resultado
 
+faz_subtracao:
+    push dword [ebp-148]         ; b
+    push dword [ebp-144]         ; a
+    call subtracao
+    add esp, 8
+    mov [ebp-152], eax           ; resultado = a - b
+    jmp mostra_resultado
+
+faz_multiplicacao:
+    ; primeiro verifica se a*b estoura 32 bits ANTES de calcular de
+    ; verdade -- se estourar, o enunciado pede para mostrar
+    ; "OCORREU OVERFLOW" e ENCERRAR o programa (nao apenas voltar
+    ; ao menu, diferente dos outros erros deste projeto).
+    push dword [ebp-148]
+    push dword [ebp-144]
+    call verifica_overflow_multiplicacao
+    add esp, 8
+
+    cmp eax, 0
+    jne overflow_multiplicacao_fatal
+
+    push dword [ebp-148]
+    push dword [ebp-144]
+    call multiplicacao
+    add esp, 8
+    mov [ebp-152], eax           ; resultado = a * b
+    jmp mostra_resultado
+
+overflow_multiplicacao_fatal:
+    push dword msg_overflow_mult_len
+    push dword msg_overflow_mult
+    call print_string
+    add esp, 8
+    mov esp, ebp
+    pop ebp
+    mov eax, 1                    ; syscall sys_exit
+    xor ebx, ebx                   ; codigo de saida 0
+    int 0x80
+
+faz_divisao:
+    ; verifica divisor == 0 ANTES de chamar divisao (que usa IDIV) --
+    ; dividir por zero derrubaria o programa (SIGFPE) se nao fosse
+    ; checado aqui. O enunciado nao especifica esse caso, entao
+    ; optamos por avisar o usuario e voltar ao menu (em vez de
+    ; encerrar o programa, que e reservado para overflow).
+    cmp dword [ebp-148], 0
+    je divisao_por_zero
+
+    push dword [ebp-148]         ; b (divisor)
+    push dword [ebp-144]         ; a (dividendo)
+    call divisao
+    add esp, 8
+    mov [ebp-152], eax           ; resultado = a / b
+    jmp mostra_resultado
+
+divisao_por_zero:
+    push dword msg_divisao_zero_len
+    push dword msg_divisao_zero
+    call print_string
+    add esp, 8
+    jmp menu_loop
+
+mostra_resultado:
     push dword msg_resultado_len
     push dword msg_resultado
     call print_string
