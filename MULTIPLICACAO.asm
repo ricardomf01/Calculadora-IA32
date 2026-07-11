@@ -2,6 +2,9 @@
 section .text
     global multiplicacao
     global verifica_overflow_multiplicacao
+    global multiplicacao16
+    global verifica_overflow_multiplicacao16
+
 
 ; -------------------------------------------------------------
 ; verifica_overflow_multiplicacao
@@ -49,5 +52,54 @@ multiplicacao:
     mov eax, [ebp+8]
     imul eax, [ebp+12]
 
+    pop ebp
+    ret
+
+; -------------------------------------------------------------
+; verifica_overflow_multiplicacao16
+;   Mesma ideia de verifica_overflow_multiplicacao, mas usando o
+;   IMUL de 16 bits (registrador AX). A flag OF, nessa forma,
+;   reflete overflow de 16 bits diretamente.
+;   [ebp+8]  = primeiro numero (a), so os 16 bits baixos usados
+;   [ebp+12] = segundo numero (b), so os 16 bits baixos usados
+;   Retorna em EAX: 1 se a*b estoura 16 bits, 0 caso contrario.
+; -------------------------------------------------------------
+verifica_overflow_multiplicacao16:
+    push ebp
+    mov ebp, esp
+ 
+    mov ax, [ebp+8]
+    imul ax, [ebp+12]          ; IMUL AX,r/m16 -- seta OF/CF se
+                                 ; o resultado nao coube em 16 bits
+    jo overflow_multiplicacao16_detectado
+ 
+    xor eax, eax
+    jmp fim_verifica_overflow_multiplicacao16
+ 
+overflow_multiplicacao16_detectado:
+    mov eax, 1
+ 
+fim_verifica_overflow_multiplicacao16:
+    pop ebp
+    ret
+ 
+; -------------------------------------------------------------
+; multiplicacao16
+;   Multiplica dois inteiros de 16 bits usando IMUL de 16 bits
+;   (registrador AX). PRESSUPOE que o chamador ja confirmou, via
+;   verifica_overflow_multiplicacao16, que o resultado cabe em
+;   16 bits.
+;   [ebp+8]  = primeiro numero (a), so os 16 bits baixos usados
+;   [ebp+12] = segundo numero (b), so os 16 bits baixos usados
+;   Retorna em EAX (sign-extended de AX) o resultado de a * b.
+; -------------------------------------------------------------
+multiplicacao16:
+    push ebp
+    mov ebp, esp
+ 
+    mov ax, [ebp+8]
+    imul ax, [ebp+12]
+    movsx eax, ax
+ 
     pop ebp
     ret
