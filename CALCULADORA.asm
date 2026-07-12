@@ -1,7 +1,6 @@
 ; =============================================================
 ; CALCULADORA.asm
-; Fase 7: SUBTRACAO, MULTIPLICACAO e DIVISAO
-; (opcoes 2, 3 e 4), alem da SOMA operando em ambas as precisoes.
+; Fase 8: todas as operações implementadas em ambas as precisoes.
 ;
 ; A variavel global "precisao" afeta tanto a LEITURA
 ; (ler_numero16 vs ler_numero32, validando a faixa certa) quanto
@@ -9,9 +8,9 @@
 ; (registrador AX) em soma.asm, subtracao.asm, multiplicacao.asm 
 ; e divisao.asm.
 ;
-; MULTIPLICACAO detecta overflow (via flag OF do IMUL, em
-; multiplicacao.asm) -- em caso de overflow, mostra "OCORREU
-; OVERFLOW" e ENCERRA o programa.
+; MULTIPLICACAO/EXPONENCIACAO detecta overflow (via flag OF do 
+; IMUL, em multiplicacao.asm) -- em caso de overflow, mostra 
+; "OCORREU OVERFLOW" e ENCERRA o programa.
 ;
 ; DIVISAO verifica se o divisor e zero ANTES de chamar a funcao
 ; divisao (que usa IDIV).
@@ -80,14 +79,14 @@ section .data
     msg_resultado       db "Resultado: "
     msg_resultado_len   equ $ - msg_resultado
 
-    msg_overflow_mult       db "OCORREU OVERFLOW", 10
-    msg_overflow_mult_len   equ $ - msg_overflow_mult
+    msg_overflow       db "OCORREU OVERFLOW", 10
+    msg_overflow_len   equ $ - msg_overflow
+
+    msg_expoente_negativo     db "Expoente deve ser nao-negativo. Voltando ao menu.", 10
+    msg_expoente_negativo_len equ $ - msg_expoente_negativo
 
     msg_divisao_zero        db "Nao e possivel dividir por zero. Voltando ao menu.", 10
     msg_divisao_zero_len    equ $ - msg_divisao_zero
-
-    msg_nao_implementado     db "Operacao ainda nao implementada (chega nas proximas fases).", 10
-    msg_nao_implementado_len equ $ - msg_nao_implementado
 
     msg_opcao_invalida       db "Opcao invalida. Tente novamente.", 10
     msg_opcao_invalida_len   equ $ - msg_opcao_invalida
@@ -118,6 +117,12 @@ section .text
     extern verifica_overflow_multiplicacao16 ; idem
     extern divisao                           ; funcao definida em divisao.asm (Fase 6)
     extern divisao16                         ; idem, versao de 16 bits (Fase 7)
+    extern exponenciacao                     ; funcao definida em exponenciacao.asm (Fase 8)
+    extern verifica_overflow_exponenciacao   ; idem
+    extern exponenciacao16                   ; idem, versao de 16 bits (Fase 8)
+    extern verifica_overflow_exponenciacao16 ; idem
+    extern mod                               ; funcao definida em mod.asm (Fase 8)
+    extern mod16                             ; idem, versao de 16 bits (Fase 8)
 
 ; -------------------------------------------------------------
 ; print_string  (sem alteracoes desde a Fase 1)
@@ -907,7 +912,7 @@ fim_le_num2:
     call imprime_inteiro
     add esp, 4
 
-    ; dispatch: chama a operacao real quando ja implementada
+    ; dispatch: chama a operacao real
     cmp dword [opcao], 1
     je faz_soma
     cmp dword [opcao], 2
@@ -916,13 +921,14 @@ fim_le_num2:
     je faz_multiplicacao
     cmp dword [opcao], 4
     je faz_divisao
+    cmp dword [opcao], 5
+    je faz_exponenciacao
+    cmp dword [opcao], 6
+    je faz_mod
 
-    ; opcoes 5-6 (EXPONENCIACAO, MOD) ainda nao implementadas -- Fase 8
-    push dword msg_nao_implementado_len
-    push dword msg_nao_implementado
-    call print_string
-    add esp, 8
-    jmp menu_loop
+    ; nunca deveria chegar aqui -- opcao ja validada entre 1 e 6
+    ; antes deste ponto (ver cmp/jl/jg logo apos o menu_loop)
+    jmp opcao_invalida
 
 faz_soma:
     cmp dword [precisao], 0
@@ -978,7 +984,7 @@ faz_multiplicacao:
     add esp, 8
 
     cmp eax, 0
-    jne overflow_multiplicacao_fatal
+    jne overflow_fatal
 
     push dword [ebp-148]
     push dword [ebp-144]
@@ -994,7 +1000,7 @@ faz_multiplicacao_16:
     add esp, 8
 
     cmp eax, 0
-    jne overflow_multiplicacao_fatal   ; mesma mensagem/saida, independente da precisao
+    jne overflow_fatal   ; mesma mensagem/saida, independente da precisao
 
     push dword [ebp-148]
     push dword [ebp-144]
@@ -1003,9 +1009,9 @@ faz_multiplicacao_16:
     mov [ebp-152], eax
     jmp mostra_resultado
 
-overflow_multiplicacao_fatal:
-    push dword msg_overflow_mult_len
-    push dword msg_overflow_mult
+overflow_fatal:
+    push dword msg_overflow_len
+    push dword msg_overflow
     call print_string
     add esp, 8
     mov esp, ebp
@@ -1048,6 +1054,80 @@ divisao_por_zero:
     call print_string
     add esp, 8
     jmp menu_loop
+
+faz_exponenciacao:
+    ; o segundo numero (ebp-148) e o EXPOENTE aqui -- um expoente
+    ; negativo nao produz resultado inteiro em geral, entao e
+    ; rejeitado antes de qualquer calculo (o enunciado nao
+    ; especifica esse caso; optamos por avisar e voltar ao menu).
+    cmp dword [ebp-148], 0
+    jl expoente_negativo
+
+    cmp dword [precisao], 0
+    je faz_exponenciacao_16
+
+    ; mesma logica de multiplicacao: verifica overflow ANTES de
+    ; calcular de verdade -- overflow aqui tambem mostra "OCORREU
+    ; OVERFLOW" e ENCERRA o programa (mesma regra da multiplicacao).
+    push dword [ebp-148]         ; expoente
+    push dword [ebp-144]         ; base
+    call verifica_overflow_exponenciacao
+    add esp, 8
+    cmp eax, 0
+    jne overflow_fatal
+
+    push dword [ebp-148]
+    push dword [ebp-144]
+    call exponenciacao
+    add esp, 8
+    mov [ebp-152], eax           ; resultado = base ^ expoente
+    jmp mostra_resultado
+
+faz_exponenciacao_16:
+    push dword [ebp-148]
+    push dword [ebp-144]
+    call verifica_overflow_exponenciacao16
+    add esp, 8
+    cmp eax, 0
+    jne overflow_fatal
+
+    push dword [ebp-148]
+    push dword [ebp-144]
+    call exponenciacao16
+    add esp, 8
+    mov [ebp-152], eax
+    jmp mostra_resultado
+
+expoente_negativo:
+    push dword msg_expoente_negativo_len
+    push dword msg_expoente_negativo
+    call print_string
+    add esp, 8
+    jmp menu_loop
+
+faz_mod:
+    ; mesma checagem de divisor == 0 que a divisao (MOD tambem usa
+    ; IDIV por baixo dos panos, sujeito ao mesmo SIGFPE se b == 0).
+    cmp dword [ebp-148], 0
+    je divisao_por_zero
+
+    cmp dword [precisao], 0
+    je faz_mod_16
+
+    push dword [ebp-148]         ; b
+    push dword [ebp-144]         ; a
+    call mod
+    add esp, 8
+    mov [ebp-152], eax           ; resultado = a % b
+    jmp mostra_resultado
+
+faz_mod_16:
+    push dword [ebp-148]
+    push dword [ebp-144]
+    call mod16
+    add esp, 8
+    mov [ebp-152], eax
+    jmp mostra_resultado
 
 mostra_resultado:
     push dword msg_resultado_len
