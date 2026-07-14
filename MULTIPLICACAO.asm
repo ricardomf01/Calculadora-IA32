@@ -1,49 +1,41 @@
+; =============================================================
+; multiplicacao.asm
+
 
 section .text
     global multiplicacao
     global verifica_overflow_multiplicacao
     global multiplicacao16
     global verifica_overflow_multiplicacao16
-
+    global calcula_multiplicacao
+    global calcula_verifica_overflow_multiplicacao
 
 ; -------------------------------------------------------------
-; verifica_overflow_multiplicacao
-;   Multiplica a e b apenas para testar a flag OF do IMUL --
-;   o resultado numerico em si e descartado aqui (a funcao
-;   "multiplicacao" e quem calcula o valor de verdade depois,
-;   caso esta funcao confirme que nao ha overflow).
-;   [ebp+8]  = primeiro numero (a)
-;   [ebp+12] = segundo numero (b)
-;   Retorna em EAX: 1 se a*b estoura 32 bits, 0 caso contrario.
+; verifica_overflow_multiplicacao(a, b) -> EAX: 1 se a*b estoura
+; 32 bits, 0 caso contrario. So testa a flag OF do IMUL; nao
+; retorna o produto (isso e feito depois por "multiplicacao").
 ; -------------------------------------------------------------
 verifica_overflow_multiplicacao:
     push ebp
     mov ebp, esp
 
     mov eax, [ebp+8]
-    imul eax, [ebp+12]          ; IMUL r32,r/m32 - seta OF/CF se
-                                ; o resultado nao coube em 32 bits
+    imul eax, [ebp+12]
     jo overflow_multiplicacao_detectado
 
-    xor eax, eax                ; sem overflow -> retorna 0
+    xor eax, eax
     jmp fim_verifica_overflow_multiplicacao
 
 overflow_multiplicacao_detectado:
-    mov eax, 1                   ; com overflow -> retorna 1
+    mov eax, 1
 
 fim_verifica_overflow_multiplicacao:
     pop ebp
     ret
 
 ; -------------------------------------------------------------
-; multiplicacao
-;   Multiplica dois inteiros de 32 bits usando a instrucao IMUL
-;   real do IA-32. PRESSUPOE que o chamador ja chamou
-;   verifica_overflow_multiplicacao antes e confirmou que o
-;   resultado cabe em 32 bits.
-;   [ebp+8]  = primeiro numero (a)
-;   [ebp+12] = segundo numero (b)
-;   Retorna em EAX o resultado de a * b.
+; multiplicacao(a, b) -> EAX = a * b, usando IMUL de 32 bits.
+; Assume que o chamador ja checou overflow antes.
 ; -------------------------------------------------------------
 multiplicacao:
     push ebp
@@ -56,50 +48,96 @@ multiplicacao:
     ret
 
 ; -------------------------------------------------------------
-; verifica_overflow_multiplicacao16
-;   Mesma ideia de verifica_overflow_multiplicacao, mas usando o
-;   IMUL de 16 bits (registrador AX). A flag OF, nessa forma,
-;   reflete overflow de 16 bits diretamente.
-;   [ebp+8]  = primeiro numero (a), so os 16 bits baixos usados
-;   [ebp+12] = segundo numero (b), so os 16 bits baixos usados
-;   Retorna em EAX: 1 se a*b estoura 16 bits, 0 caso contrario.
+; verifica_overflow_multiplicacao16(a, b) -> EAX: mesma ideia,
+; usando IMUL de 16 bits (AX) -- a flag OF ja reflete overflow
+; de 16 bits diretamente.
 ; -------------------------------------------------------------
 verifica_overflow_multiplicacao16:
     push ebp
     mov ebp, esp
- 
+
     mov ax, [ebp+8]
-    imul ax, [ebp+12]          ; IMUL AX,r/m16 -- seta OF/CF se
-                                 ; o resultado nao coube em 16 bits
+    imul ax, [ebp+12]
     jo overflow_multiplicacao16_detectado
- 
+
     xor eax, eax
     jmp fim_verifica_overflow_multiplicacao16
- 
+
 overflow_multiplicacao16_detectado:
     mov eax, 1
- 
+
 fim_verifica_overflow_multiplicacao16:
     pop ebp
     ret
- 
+
 ; -------------------------------------------------------------
-; multiplicacao16
-;   Multiplica dois inteiros de 16 bits usando IMUL de 16 bits
-;   (registrador AX). PRESSUPOE que o chamador ja confirmou, via
-;   verifica_overflow_multiplicacao16, que o resultado cabe em
-;   16 bits.
-;   [ebp+8]  = primeiro numero (a), so os 16 bits baixos usados
-;   [ebp+12] = segundo numero (b), so os 16 bits baixos usados
-;   Retorna em EAX (sign-extended de AX) o resultado de a * b.
+; multiplicacao16(a, b) -> EAX = a * b, usando IMUL de 16 bits
+; (AX). Resultado sign-extended de volta para EAX.
 ; -------------------------------------------------------------
 multiplicacao16:
     push ebp
     mov ebp, esp
- 
+
     mov ax, [ebp+8]
     imul ax, [ebp+12]
     movsx eax, ax
- 
+
+    pop ebp
+    ret
+
+; -------------------------------------------------------------
+; calcula_verifica_overflow_multiplicacao(a, b, precisao) -> EAX
+; Escolhe a checagem de overflow de 32 ou 16 bits conforme
+; precisao. Unico ponto de entrada usado por CALCULADORA.asm.
+; -------------------------------------------------------------
+calcula_verifica_overflow_multiplicacao:
+    push ebp
+    mov ebp, esp
+
+    cmp dword [ebp+16], 0
+    je calcula_overflow_mult_16
+
+    push dword [ebp+12]
+    push dword [ebp+8]
+    call verifica_overflow_multiplicacao
+    add esp, 8
+    jmp fim_calcula_overflow_mult
+
+calcula_overflow_mult_16:
+    push dword [ebp+12]
+    push dword [ebp+8]
+    call verifica_overflow_multiplicacao16
+    add esp, 8
+
+fim_calcula_overflow_mult:
+    pop ebp
+    ret
+
+; -------------------------------------------------------------
+; calcula_multiplicacao(a, b, precisao) -> EAX
+; Escolhe multiplicacao ou multiplicacao16 conforme precisao.
+; Assume que o chamador ja confirmou, via
+; calcula_verifica_overflow_multiplicacao, que nao ha overflow.
+; -------------------------------------------------------------
+calcula_multiplicacao:
+    push ebp
+    mov ebp, esp
+
+    cmp dword [ebp+16], 0
+    je calcula_multiplicacao_16
+
+    push dword [ebp+12]
+    push dword [ebp+8]
+    call multiplicacao
+    add esp, 8
+    jmp fim_calcula_multiplicacao
+
+calcula_multiplicacao_16:
+    push dword [ebp+12]
+    push dword [ebp+8]
+    call multiplicacao16
+    add esp, 8
+
+fim_calcula_multiplicacao:
     pop ebp
     ret

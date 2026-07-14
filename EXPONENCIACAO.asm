@@ -1,25 +1,20 @@
 ; =============================================================
 ; exponenciacao.asm
-;
-; CASOS ESPECIAIS (base 0, 1 ou -1): tratados diretamente, sem
-; looping, por dois motivos -- (1) sao a unica forma de o
-; expoente ser gigante (ate 2147483647) sem que isso demore uma
-; eternidade para calcular, e (2) essas bases nunca estouram
-; overflow, entao merecem um atalho.
-;
-;Expoentes negativos são verificados diretamente em CALCULADORA
-;==============================================================
 
 section .text
     global verifica_overflow_exponenciacao
     global exponenciacao
     global verifica_overflow_exponenciacao16
     global exponenciacao16
+    global calcula_verifica_overflow_exponenciacao
+    global calcula_exponenciacao
 
 ; -------------------------------------------------------------
 ; verifica_overflow_exponenciacao
-;   Simula base^expoente multiplicando passo a passo, checando 
-;   a flag OF do IMUL a cada passo.
+;   Simula base^expoente multiplicando passo a passo (igual ao
+;   que "exponenciacao" vai fazer depois), checando a flag OF do
+;   IMUL a cada passo -- para assim que detectar overflow, sem
+;   precisar terminar o calculo.
 ;   [ebp+8]  = base
 ;   [ebp+12] = expoente (assumido >= 0 -- o chamador ja validou)
 ;   Retorna em EAX: 1 se ocorrer overflow, 0 caso contrario.
@@ -221,5 +216,61 @@ exp16_fim:
 
     pop ecx
     pop ebx
+    pop ebp
+    ret
+
+; -------------------------------------------------------------
+; calcula_verifica_overflow_exponenciacao(base, expoente, precisao)
+; -> EAX. Escolhe a checagem de 32 ou 16 bits conforme precisao.
+; -------------------------------------------------------------
+calcula_verifica_overflow_exponenciacao:
+    push ebp
+    mov ebp, esp
+
+    cmp dword [ebp+16], 0
+    je calcula_overflow_expo_16
+
+    push dword [ebp+12]
+    push dword [ebp+8]
+    call verifica_overflow_exponenciacao
+    add esp, 8
+    jmp fim_calcula_overflow_expo
+
+calcula_overflow_expo_16:
+    push dword [ebp+12]
+    push dword [ebp+8]
+    call verifica_overflow_exponenciacao16
+    add esp, 8
+
+fim_calcula_overflow_expo:
+    pop ebp
+    ret
+
+; -------------------------------------------------------------
+; calcula_exponenciacao(base, expoente, precisao) -> EAX
+; Escolhe exponenciacao ou exponenciacao16 conforme precisao.
+; Assume que o chamador ja confirmou, via
+; calcula_verifica_overflow_exponenciacao, que nao ha overflow.
+; -------------------------------------------------------------
+calcula_exponenciacao:
+    push ebp
+    mov ebp, esp
+
+    cmp dword [ebp+16], 0
+    je calcula_exponenciacao_16
+
+    push dword [ebp+12]
+    push dword [ebp+8]
+    call exponenciacao
+    add esp, 8
+    jmp fim_calcula_exponenciacao
+
+calcula_exponenciacao_16:
+    push dword [ebp+12]
+    push dword [ebp+8]
+    call exponenciacao16
+    add esp, 8
+
+fim_calcula_exponenciacao:
     pop ebp
     ret

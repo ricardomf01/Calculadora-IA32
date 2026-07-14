@@ -1,28 +1,25 @@
 ; =============================================================
 ; CALCULADORA.asm
-; Fase 8: todas as operações implementadas em ambas as precisoes.
+; Programa principal: le nome, precisao (16/32 bits) e opcao do
+; menu; contem as funcoes de I/O (leitura/escrita/conversao) e
+; despacha para as operacoes reais (SOMA, SUBTRACAO,
+; MULTIPLICACAO, DIVISAO, EXPONENCIACAO, MOD).
 ;
-; A variavel global "precisao" afeta tanto a LEITURA
-; (ler_numero16 vs ler_numero32, validando a faixa certa) quanto
-; o CALCULO: cada operacao tem uma versao de 16 bits de verdade
-; (registrador AX) em soma.asm, subtracao.asm, multiplicacao.asm 
-; e divisao.asm.
-;
-; MULTIPLICACAO/EXPONENCIACAO detecta overflow (via flag OF do 
-; IMUL, em multiplicacao.asm) -- em caso de overflow, mostra 
-; "OCORREU OVERFLOW" e ENCERRA o programa.
-;
-; DIVISAO verifica se o divisor e zero ANTES de chamar a funcao
-; divisao (que usa IDIV).
-;
+; Convencoes do projeto: parametros sempre pela pilha, retorno
+; sempre em EAX. Toda saida de texto passa por print_string.
+; Globais permitidas: ponteiros de mensagem, nome, precisao,
+; opcao -- todo o resto e local.
 ;
 ; Monta:   nasm -f elf32 -g -F dwarf CALCULADORA.asm  -o CALCULADORA.o
 ;          nasm -f elf32 -g -F dwarf soma.asm          -o soma.o
 ;          nasm -f elf32 -g -F dwarf subtracao.asm     -o subtracao.o
 ;          nasm -f elf32 -g -F dwarf multiplicacao.asm -o multiplicacao.o
 ;          nasm -f elf32 -g -F dwarf divisao.asm       -o divisao.o
-; Linka:   ld -m elf_i386 -o calculadora CALCULADORA.o soma.o subtracao.o multiplicacao.o divisao.o
+;          nasm -f elf32 -g -F dwarf exponenciacao.asm -o exponenciacao.o
+;          nasm -f elf32 -g -F dwarf mod.asm           -o mod.o
+; Linka:   ld -m elf_i386 -o calculadora CALCULADORA.o soma.o subtracao.o multiplicacao.o divisao.o exponenciacao.o mod.o
 ; Roda:    ./calculadora
+; (ou simplesmente: make)
 ; =============================================================
 
 section .data
@@ -32,8 +29,6 @@ section .data
     msg_pedir_nome      db "Bem-vindo. Digite seu nome:", 10
     msg_pedir_nome_len  equ $ - msg_pedir_nome
 
-    ; pedacos fixos da saudacao final -- sao "ponteiros de
-    ; mensagem", categoria explicitamente permitida como global
     msg_ola             db "Ola, "
     msg_ola_len         equ $ - msg_ola
 
@@ -46,8 +41,7 @@ section .data
     msg_precisao_invalida     db "Valor invalido. Digite 0 (16 bits) ou 1 (32 bits).", 10
     msg_precisao_invalida_len equ $ - msg_precisao_invalida
 
-    ; menu completo em um unico bloco -- continua sendo impresso
-    ; por UMA SO chamada a print_string (a funcao unica de saida)
+    ; impresso por UMA SO chamada a print_string
     msg_menu            db "ESCOLHA UMA OPCAO:", 10, \
                            "- 1: SOMA", 10, \
                            "- 2: SUBTRACAO", 10, \
@@ -92,43 +86,27 @@ section .data
     msg_opcao_invalida_len   equ $ - msg_opcao_invalida
 
 section .bss
-    ; "variavel de nome" -- unica das variaveis de dado (nao
-    ; ponteiro de mensagem fixa) explicitamente permitida como
-    ; global pelo enunciado.
-    ; Declaradas "global" para poderem ser inspecionadas pelo
-    ; gdb (print/x) e para eventual uso por outros arquivos .asm.
+    ; Unicas globais alem dos ponteiros de mensagem, conforme
+    ; permitido pelo enunciado. Declaradas "global" para serem
+    ; inspecionaveis no gdb e acessiveis de outros .asm.
     global nome, precisao, opcao
     nome        resb 64
-
-    ; "variavel de precisao" e "variavel de opcao do menu" --
-    ; tambem explicitamente permitidas como globais.
     precisao    resd 1
     opcao       resd 1
 
 section .text
     global _start
-    extern soma                              ; funcao definida em soma.asm (Fase 5)
-    extern soma16                            ; idem, versao de 16 bits (Fase 7)
-    extern subtracao                         ; funcao definida em subtracao.asm (Fase 6)
-    extern subtracao16                       ; idem, versao de 16 bits (Fase 7)
-    extern multiplicacao                     ; funcao definida em multiplicacao.asm (Fase 6)
-    extern verifica_overflow_multiplicacao   ; idem
-    extern multiplicacao16                   ; idem, versao de 16 bits (Fase 7)
-    extern verifica_overflow_multiplicacao16 ; idem
-    extern divisao                           ; funcao definida em divisao.asm (Fase 6)
-    extern divisao16                         ; idem, versao de 16 bits (Fase 7)
-    extern exponenciacao                     ; funcao definida em exponenciacao.asm (Fase 8)
-    extern verifica_overflow_exponenciacao   ; idem
-    extern exponenciacao16                   ; idem, versao de 16 bits (Fase 8)
-    extern verifica_overflow_exponenciacao16 ; idem
-    extern mod                               ; funcao definida em mod.asm (Fase 8)
-    extern mod16                             ; idem, versao de 16 bits (Fase 8)
+    extern calcula_soma
+    extern calcula_subtracao
+    extern calcula_multiplicacao
+    extern calcula_verifica_overflow_multiplicacao
+    extern calcula_divisao
+    extern calcula_exponenciacao
+    extern calcula_verifica_overflow_exponenciacao
+    extern calcula_mod
 
 ; -------------------------------------------------------------
-; print_string  (sem alteracoes desde a Fase 1)
-;   [ebp+8]  = ponteiro da string
-;   [ebp+12] = tamanho em bytes
-;   sem retorno
+; print_string(ptr, tamanho) -- unica funcao de saida do projeto.
 ; -------------------------------------------------------------
 print_string:
     push ebp
@@ -146,24 +124,11 @@ print_string:
     ret
 
 ; -------------------------------------------------------------
-; read_string
-;   Le uma linha do teclado (stdin) para dentro de um buffer.
-;   [ebp+8]  = ponteiro do buffer de destino
-;   [ebp+12] = tamanho maximo do buffer
-;   Retorna em EAX a quantidade de caracteres lidos, SEM contar
-;   o '\n' final (se o usuario apertar ENTER, o que e o caso
-;   normal ao digitar o nome).
-;
-;   IMPORTANTE (correcao de bug): se a linha digitada pelo
-;   usuario for MAIOR que o buffer pedido, o '\n' final NAO
-;   estara dentro do que foi lido aqui -- e os bytes restantes
-;   ficariam esperando no stdin, sendo lidos silenciosamente na
-;   PROXIMA chamada de read_string (sem o usuario digitar nada
-;   naquele momento). Para evitar isso, quando detectamos que o
-;   '\n' nao veio dentro do buffer, DRENAMOS (descartamos) o
-;   resto da mesma linha aqui dentro, antes de retornar --
-;   assim a proxima chamada sempre comeca numa linha nova de
-;   verdade, digitada pelo usuario.
+; read_string(buffer, tamanho_max) -> EAX = chars lidos (sem \n).
+; Se a linha digitada for maior que o buffer, o restante ainda
+; nao lido fica esperando no stdin -- para evitar que isso vaze
+; para a PROXIMA leitura, esta funcao drena (descarta) o resto
+; da linha aqui mesmo antes de retornar.
 ; -------------------------------------------------------------
 read_string:
     push ebp
@@ -223,14 +188,8 @@ fim_read_string:
     ret
 
 ; -------------------------------------------------------------
-; copiar_bytes
-;   Copia [tamanho] bytes de [origem] para [destino].
-;   [ebp+8]  = ponteiro destino
-;   [ebp+12] = ponteiro origem
-;   [ebp+16] = quantidade de bytes
-;   Retorna em EAX o ponteiro destino JA AVANCADO (destino +
-;   tamanho) -- assim quem chamou pode encadear varias copias
-;   seguidas sem recalcular a posicao manualmente.
+; copiar_bytes(destino, origem, tamanho) -> EAX = destino+tamanho
+; (permite encadear copias sem recalcular a posicao).
 ; -------------------------------------------------------------
 copiar_bytes:
     push ebp
@@ -254,15 +213,10 @@ copiar_bytes:
     ret
 
 ; -------------------------------------------------------------
-; monta_saudacao
-;   Monta em [destino] a frase "Ola, <nome>, bem-vindo ao
-;   programa de CALCULADORA IA-32.\n".
-;   [ebp+8]  = ponteiro do buffer de destino (fornecido por quem
-;              chamou -- normalmente uma variavel local na pilha
-;              de quem chamou, e nao uma global nova)
-;   [ebp+12] = ponteiro do nome do usuario
-;   [ebp+16] = tamanho do nome
-;   Retorna em EAX o tamanho TOTAL da mensagem montada.
+; monta_saudacao(destino, nome_ptr, nome_len) -> EAX = tamanho
+; total. Monta "Ola, <nome>, bem-vindo ao programa de
+; CALCULADORA IA-32.\n" no buffer destino (fornecido pelo
+; chamador -- geralmente uma variavel local, nao uma global).
 ; -------------------------------------------------------------
 monta_saudacao:
     push ebp
@@ -301,12 +255,7 @@ monta_saudacao:
     ret
 
 ; -------------------------------------------------------------
-; converte_digito
-;   Converte um caractere ASCII de digito ('0' a '9') no valor
-;   inteiro correspondente. Usada tanto para a precisao (0 ou 1)
-;   quanto para a opcao do menu (1 a 7).
-;   [ebp+8] = ponteiro para o buffer (le apenas o 1o caractere)
-;   Retorna em EAX o valor inteiro do digito.
+; converte_digito(ptr) -> EAX = valor inteiro do 1o caractere.
 ; -------------------------------------------------------------
 converte_digito:
     push ebp
@@ -320,12 +269,8 @@ converte_digito:
     ret
 
 ; -------------------------------------------------------------
-; converte_numero32
-;   Converte uma string de digitos (com sinal opcional '+'/'-')
-;   para o inteiro de 32 bits correspondente.
-;   [ebp+8]  = ponteiro da string
-;   [ebp+12] = tamanho da string (sem contar o '\n')
-;   Retorna em EAX o valor inteiro convertido (com sinal).
+; converte_numero32(ptr, tamanho) -> EAX = inteiro convertido
+; (aceita sinal opcional '+'/'-').
 ; -------------------------------------------------------------
 converte_numero32:
     push ebp
@@ -377,21 +322,11 @@ fim_converte_numero32:
     ret
 
 ; -------------------------------------------------------------
-; verifica_overflow_numero32
-;   Percorre a mesma string de digitos que converte_numero32 vai
-;   processar, simulando o acumulo (valor = valor*10 + digito) e
-;   parando ANTES de multiplicar/somar caso isso fosse estourar a
-;   faixa de 32 bits -- sem depender de deteccao de overflow DEPOIS
-;   do fato (o que ja teria corrompido o valor por wraparound).
-;
-;   O limite depende do sinal, pois a faixa de int32 e assimetrica:
-;     positivo -> cabe ate 2147483647 (ultimo digito permitido: 7)
-;     negativo -> cabe ate 2147483648 em magnitude (ultimo digito
-;                 permitido: 8), pois esse e o INT_MIN
-;
-;   [ebp+8]  = ponteiro da string
-;   [ebp+12] = tamanho da string (sem contar o '\n')
-;   Retorna em EAX: 1 se houver overflow, 0 caso contrario.
+; verifica_overflow_numero32(ptr, tamanho) -> EAX: 1 se a string
+; estoura 32 bits, 0 caso contrario. Checa ANTES de multiplicar/
+; somar (nao detecta depois, quando ja teria corrompido o valor).
+; Limite assimetrico: positivo ate 2147483647 (ultimo digito 7),
+; negativo ate 2147483648 em magnitude (ultimo digito 8, o INT_MIN).
 ; -------------------------------------------------------------
 verifica_overflow_numero32:
     push ebp
@@ -463,16 +398,9 @@ verifica_fim_overflow:
     ret
 
 ; -------------------------------------------------------------
-; ler_numero32
-;   Imprime a mensagem de prompt recebida, le uma linha do teclado
-;   e converte para inteiro de 32 bits. Caso o valor digitado
-;   estoure a faixa de 32 bits, avisa o usuario e REPETE a mesma
-;   pergunta ate receber um valor valido -- mesmo padrao de retry
-;   ja usado na pergunta de precisao, em _start.
-;   [ebp+8]  = ponteiro da mensagem de prompt (reimpressa a cada
-;              tentativa, inclusive apos overflow)
-;   [ebp+12] = tamanho da mensagem de prompt
-;   Retorna em EAX o valor inteiro lido (ja validado, sem overflow).
+; ler_numero32(msg_ptr, msg_len) -> EAX = valor lido (32 bits).
+; Imprime o prompt, le, converte; se estourar 32 bits, avisa e
+; repete a mesma pergunta ate receber um valor valido.
 ; -------------------------------------------------------------
 ler_numero32:
     push ebp
@@ -522,14 +450,9 @@ numero32_sem_overflow:
     ret
 
 ; -------------------------------------------------------------
-; verifica_overflow_numero16
-;   Mesma logica de verifica_overflow_numero32, mas com os
-;   limites da faixa de 16 bits: positivo ate 32767 (ultimo
-;   digito permitido: 7), negativo ate 32768 em magnitude
-;   (ultimo digito permitido: 8) -- o INT16_MIN.
-;   [ebp+8]  = ponteiro da string
-;   [ebp+12] = tamanho da string (sem contar o '\n')
-;   Retorna em EAX: 1 se houver overflow, 0 caso contrario.
+; verifica_overflow_numero16(ptr, tamanho) -> EAX: igual a
+; verifica_overflow_numero32, mas com limites de 16 bits
+; (positivo ate 32767, negativo ate 32768 em magnitude).
 ; -------------------------------------------------------------
 verifica_overflow_numero16:
     push ebp
@@ -601,16 +524,9 @@ verifica16_fim_overflow:
     ret
 
 ; -------------------------------------------------------------
-; ler_numero16
-;   Igual a ler_numero32 (mesmo prompt-retry, mesmo formato de
-;   parametros), mas valida a faixa de 16 bits em vez de 32.
-;   Reaproveita converte_numero32 para o parsing de fato (a
-;   logica de converter digitos em inteiro nao muda -- so a
-;   FAIXA aceita antes de converter e diferente).
-;   [ebp+8]  = ponteiro da mensagem de prompt
-;   [ebp+12] = tamanho da mensagem de prompt
-;   Retorna em EAX o valor inteiro lido (dentro da faixa de 16
-;   bits, garantidamente).
+; ler_numero16(msg_ptr, msg_len) -> EAX = valor lido (16 bits).
+; Igual a ler_numero32, validando a faixa de 16 bits. Reaproveita
+; converte_numero32 para o parsing (so a faixa aceita difere).
 ; -------------------------------------------------------------
 ler_numero16:
     push ebp
@@ -651,19 +567,43 @@ numero16_sem_overflow:
     push eax
     call converte_numero32
     add esp, 8
-    ; EAX = valor inteiro convertido (ja garantidamente na faixa de 16 bits)
 
     mov esp, ebp
     pop ebp
     ret
 
 ; -------------------------------------------------------------
-; imprime_inteiro
-;   Converte um inteiro de 32 bits (com sinal) para string
-;   decimal e imprime, seguido de uma quebra de linha.
-;   Usa a instrucao DIV real do IA-32 para extrair os digitos.
-;   [ebp+8] = valor inteiro a imprimir
-;   Sem retorno.
+; ler_numero(msg_ptr, msg_len, precisao) -> EAX
+; Escolhe ler_numero32 ou ler_numero16 conforme precisao (0 =
+; 16 bits, 1 = 32 bits). Unico ponto de leitura de numero usado
+; em _start.
+; -------------------------------------------------------------
+ler_numero:
+    push ebp
+    mov ebp, esp
+
+    cmp dword [ebp+16], 0
+    je ler_numero_16bits
+
+    push dword [ebp+12]
+    push dword [ebp+8]
+    call ler_numero32
+    add esp, 8
+    jmp fim_ler_numero
+
+ler_numero_16bits:
+    push dword [ebp+12]
+    push dword [ebp+8]
+    call ler_numero16
+    add esp, 8
+
+fim_ler_numero:
+    pop ebp
+    ret
+
+; -------------------------------------------------------------
+; imprime_inteiro(valor) -- converte para string decimal (com
+; sinal) e imprime, usando DIV real do IA-32.
 ; -------------------------------------------------------------
 imprime_inteiro:
     push ebp
@@ -732,42 +672,34 @@ pula_sinal_negativo:
 _start:
     push ebp
     mov ebp, esp
-    ; layout das variaveis locais deste "main":
-    ;   [ebp-128 .. ebp-1]   -> buffer local p/ montar a saudacao
-    ;   [ebp-132]            -> tamanho do nome lido
-    ;   [ebp-140 .. ebp-133] -> buffer local p/ ler um digito
-    ;                           (reaproveitado para precisao E
-    ;                           para cada opcao do menu no loop)
-    ;   [ebp-144]            -> primeiro numero lido (Fase 4)
-    ;   [ebp-148]            -> segundo numero lido (Fase 4)
-    ;   [ebp-152]            -> resultado da operacao (Fase 5)
+    ; locais: [ebp-128..-1] buffer saudacao | [ebp-132] nome_len |
+    ; [ebp-140..-133] buffer de digito (reaproveitado) |
+    ; [ebp-144] num1 | [ebp-148] num2 | [ebp-152] resultado
     sub esp, 152
 
-    ; 1) pergunta o nome
+    ; nome
     push dword msg_pedir_nome_len
     push dword msg_pedir_nome
     call print_string
     add esp, 8
 
-    ; 2) le o nome (guardado na global "nome", permitida pelo enunciado)
     push dword 64
     push dword nome
     call read_string
     add esp, 8
-    mov [ebp-132], eax          ; nome_len = EAX
+    mov [ebp-132], eax          ; nome_len
 
-    ; 3) monta a saudacao em um buffer LOCAL (nao cria global nova)
+    ; saudacao (buffer local, nao cria global nova)
     lea eax, [ebp-128]
-    push dword [ebp-132]        ; nome_len
-    push dword nome              ; ponteiro do nome
-    push eax                     ; ponteiro do buffer local (destino)
+    push dword [ebp-132]
+    push dword nome
+    push eax
     call monta_saudacao
-    add esp, 12                  ; EAX = tamanho total da saudacao
+    add esp, 12
 
-    ; 4) imprime a saudacao
-    push eax                     ; tamanho
+    push eax
     lea eax, [ebp-128]
-    push eax                     ; ponteiro do buffer
+    push eax
     call print_string
     add esp, 8
 
@@ -776,22 +708,20 @@ _start:
     call print_string
     add esp, 8
 
-    ; 5) pergunta a precisao (0 = 16 bits, 1 = 32 bits)
-    ;    repete ate receber uma entrada valida de UM SO caractere
+    ; precisao (repete ate um digito valido 0/1)
 pergunta_precisao:
     push dword msg_precisao_len
     push dword msg_precisao
     call print_string
     add esp, 8
 
-    lea eax, [ebp-140]           ; buffer local do digito
+    lea eax, [ebp-140]
     push dword 8
     push eax
     call read_string
     add esp, 8
-    ; EAX = quantidade de caracteres realmente lidos (sem o '\n')
 
-    cmp eax, 1                   ; precisa ser EXATAMENTE 1 caractere
+    cmp eax, 1                   ; precisa ser exatamente 1 caractere
     jne precisao_invalida
 
     lea eax, [ebp-140]
@@ -806,7 +736,7 @@ pergunta_precisao:
     jmp precisao_invalida
 
 precisao_valida:
-    mov [precisao], eax          ; guarda na global "precisao"
+    mov [precisao], eax
     jmp fim_precisao
 
 precisao_invalida:
@@ -818,7 +748,7 @@ precisao_invalida:
 
 fim_precisao:
 
-    ; 6) loop principal do menu
+    ; loop principal do menu
 menu_loop:
     push dword msg_linha_vazia_len
     push dword msg_linha_vazia
@@ -830,22 +760,20 @@ menu_loop:
     call print_string
     add esp, 8
 
-    lea eax, [ebp-140]           ; reaproveita o buffer local do digito
+    lea eax, [ebp-140]
     push dword 8
     push eax
     call read_string
     add esp, 8
-    ; EAX = quantidade de caracteres realmente lidos (sem o '\n')
 
-    cmp eax, 1                   ; precisa ser EXATAMENTE 1 caractere
-    jne opcao_invalida          ; ex.: "716" tem 3 chars -> invalida direto,
-                                  ; nunca chega a interpretar o '7' isolado
+    cmp eax, 1                   ; precisa ser exatamente 1 caractere
+    jne opcao_invalida
 
     lea eax, [ebp-140]
     push eax
     call converte_digito
     add esp, 4
-    mov [opcao], eax             ; guarda na global "opcao"
+    mov [opcao], eax
 
     cmp dword [opcao], 7
     je sair_menu
@@ -855,43 +783,19 @@ menu_loop:
     cmp dword [opcao], 6
     jg opcao_invalida
 
-    ; opcao valida (1-6) -- le os dois numeros na precisao
-    ; escolhida pelo usuario (Fase 7), depois despacha para a
-    ; operacao real (Fase 5/6) ou mostra "ainda nao implementado".
-    cmp dword [precisao], 0
-    je le_num1_16bits
-
+    ; opcao valida (1-6) -- le os dois numeros na precisao escolhida
+    push dword [precisao]
     push dword msg_pede_num1_len
     push dword msg_pede_num1
-    call ler_numero32
-    add esp, 8
-    jmp fim_le_num1
-
-le_num1_16bits:
-    push dword msg_pede_num1_len
-    push dword msg_pede_num1
-    call ler_numero16
-    add esp, 8
-
-fim_le_num1:
+    call ler_numero
+    add esp, 12
     mov [ebp-144], eax           ; num1
 
-    cmp dword [precisao], 0
-    je le_num2_16bits
-
+    push dword [precisao]
     push dword msg_pede_num2_len
     push dword msg_pede_num2
-    call ler_numero32
-    add esp, 8
-    jmp fim_le_num2
-
-le_num2_16bits:
-    push dword msg_pede_num2_len
-    push dword msg_pede_num2
-    call ler_numero16
-    add esp, 8
-
-fim_le_num2:
+    call ler_numero
+    add esp, 12
     mov [ebp-148], eax           ; num2
 
     push dword msg_valor1_len
@@ -931,81 +835,40 @@ fim_le_num2:
     jmp opcao_invalida
 
 faz_soma:
-    cmp dword [precisao], 0
-    je faz_soma_16
-
-    push dword [ebp-148]         ; segundo numero (b)
-    push dword [ebp-144]         ; primeiro numero (a)
-    call soma
-    add esp, 8
-    mov [ebp-152], eax           ; resultado = a + b
-    jmp mostra_resultado
-
-faz_soma_16:
+    push dword [precisao]
     push dword [ebp-148]
     push dword [ebp-144]
-    call soma16
-    add esp, 8
+    call calcula_soma
+    add esp, 12
     mov [ebp-152], eax
     jmp mostra_resultado
 
 faz_subtracao:
-    cmp dword [precisao], 0
-    je faz_subtracao_16
-
-    push dword [ebp-148]         ; b
-    push dword [ebp-144]         ; a
-    call subtracao
-    add esp, 8
-    mov [ebp-152], eax           ; resultado = a - b
-    jmp mostra_resultado
-
-faz_subtracao_16:
+    push dword [precisao]
     push dword [ebp-148]
     push dword [ebp-144]
-    call subtracao16
-    add esp, 8
+    call calcula_subtracao
+    add esp, 12
     mov [ebp-152], eax
     jmp mostra_resultado
 
 faz_multiplicacao:
-    ; primeiro verifica se a*b estoura a precisao escolhida ANTES de
-    ; calcular de verdade -- se estourar, o enunciado pede para
-    ; mostrar "OCORREU OVERFLOW" e ENCERRAR o programa (nao apenas
-    ; voltar ao menu, diferente dos outros erros deste projeto).
-    ; Essa regra vale igual nas duas precisoes -- so muda qual par
-    ; de funcoes (32 ou 16 bits) e usado para checar/calcular.
-    cmp dword [precisao], 0
-    je faz_multiplicacao_16
-
+    ; overflow em multiplicacao mostra "OCORREU OVERFLOW" e
+    ; ENCERRA o programa (unico erro deste projeto que nao volta
+    ; ao menu -- exigencia do enunciado).
+    push dword [precisao]
     push dword [ebp-148]
     push dword [ebp-144]
-    call verifica_overflow_multiplicacao
-    add esp, 8
-
+    call calcula_verifica_overflow_multiplicacao
+    add esp, 12
     cmp eax, 0
     jne overflow_fatal
 
+    push dword [precisao]
     push dword [ebp-148]
     push dword [ebp-144]
-    call multiplicacao
-    add esp, 8
-    mov [ebp-152], eax           ; resultado = a * b
-    jmp mostra_resultado
-
-faz_multiplicacao_16:
-    push dword [ebp-148]
-    push dword [ebp-144]
-    call verifica_overflow_multiplicacao16
-    add esp, 8
-
-    cmp eax, 0
-    jne overflow_fatal   ; mesma mensagem/saida, independente da precisao
-
-    push dword [ebp-148]
-    push dword [ebp-144]
-    call multiplicacao16
-    add esp, 8
+    call calcula_multiplicacao
+    add esp, 12
     mov [ebp-152], eax
     jmp mostra_resultado
 
@@ -1016,35 +879,20 @@ overflow_fatal:
     add esp, 8
     mov esp, ebp
     pop ebp
-    mov eax, 1                    ; syscall sys_exit
-    xor ebx, ebx                   ; codigo de saida 0
+    mov eax, 1
+    xor ebx, ebx
     int 0x80
 
 faz_divisao:
-    ; verifica divisor == 0 ANTES de chamar divisao/divisao16 (que
-    ; usam IDIV) -- dividir por zero derrubaria o programa (SIGFPE)
-    ; se nao fosse checado aqui. O enunciado nao especifica esse
-    ; caso, entao optamos por avisar o usuario e voltar ao menu (em
-    ; vez de encerrar o programa, que e reservado para overflow).
-    ; Essa checagem nao depende da precisao (zero e zero nos dois casos).
+    ; IDIV por zero derruba o programa (SIGFPE) -- checa antes.
     cmp dword [ebp-148], 0
     je divisao_por_zero
 
-    cmp dword [precisao], 0
-    je faz_divisao_16
-
-    push dword [ebp-148]         ; b (divisor)
-    push dword [ebp-144]         ; a (dividendo)
-    call divisao
-    add esp, 8
-    mov [ebp-152], eax           ; resultado = a / b
-    jmp mostra_resultado
-
-faz_divisao_16:
+    push dword [precisao]
     push dword [ebp-148]
     push dword [ebp-144]
-    call divisao16
-    add esp, 8
+    call calcula_divisao
+    add esp, 12
     mov [ebp-152], eax
     jmp mostra_resultado
 
@@ -1056,45 +904,23 @@ divisao_por_zero:
     jmp menu_loop
 
 faz_exponenciacao:
-    ; o segundo numero (ebp-148) e o EXPOENTE aqui -- um expoente
-    ; negativo nao produz resultado inteiro em geral, entao e
-    ; rejeitado antes de qualquer calculo (o enunciado nao
-    ; especifica esse caso; optamos por avisar e voltar ao menu).
+    ; segundo numero = expoente; negativo nao produz inteiro.
     cmp dword [ebp-148], 0
     jl expoente_negativo
 
-    cmp dword [precisao], 0
-    je faz_exponenciacao_16
-
-    ; mesma logica de multiplicacao: verifica overflow ANTES de
-    ; calcular de verdade -- overflow aqui tambem mostra "OCORREU
-    ; OVERFLOW" e ENCERRA o programa (mesma regra da multiplicacao).
-    push dword [ebp-148]         ; expoente
-    push dword [ebp-144]         ; base
-    call verifica_overflow_exponenciacao
-    add esp, 8
+    push dword [precisao]
+    push dword [ebp-148]
+    push dword [ebp-144]
+    call calcula_verifica_overflow_exponenciacao
+    add esp, 12
     cmp eax, 0
     jne overflow_fatal
 
+    push dword [precisao]
     push dword [ebp-148]
     push dword [ebp-144]
-    call exponenciacao
-    add esp, 8
-    mov [ebp-152], eax           ; resultado = base ^ expoente
-    jmp mostra_resultado
-
-faz_exponenciacao_16:
-    push dword [ebp-148]
-    push dword [ebp-144]
-    call verifica_overflow_exponenciacao16
-    add esp, 8
-    cmp eax, 0
-    jne overflow_fatal
-
-    push dword [ebp-148]
-    push dword [ebp-144]
-    call exponenciacao16
-    add esp, 8
+    call calcula_exponenciacao
+    add esp, 12
     mov [ebp-152], eax
     jmp mostra_resultado
 
@@ -1106,26 +932,14 @@ expoente_negativo:
     jmp menu_loop
 
 faz_mod:
-    ; mesma checagem de divisor == 0 que a divisao (MOD tambem usa
-    ; IDIV por baixo dos panos, sujeito ao mesmo SIGFPE se b == 0).
     cmp dword [ebp-148], 0
     je divisao_por_zero
 
-    cmp dword [precisao], 0
-    je faz_mod_16
-
-    push dword [ebp-148]         ; b
-    push dword [ebp-144]         ; a
-    call mod
-    add esp, 8
-    mov [ebp-152], eax           ; resultado = a % b
-    jmp mostra_resultado
-
-faz_mod_16:
+    push dword [precisao]
     push dword [ebp-148]
     push dword [ebp-144]
-    call mod16
-    add esp, 8
+    call calcula_mod
+    add esp, 12
     mov [ebp-152], eax
     jmp mostra_resultado
 
